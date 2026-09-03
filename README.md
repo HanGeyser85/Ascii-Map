@@ -231,6 +231,11 @@ maze, same algorithm, same numbers, every time, on any machine, busy or
 idle - which is what makes them fair to actually rank on. See
 `scoring.go`'s doc comment for the full reasoning.
 
+`span` remains in the exported result as a visualization measure only: the
+viewer reveals every edge with the same discovery depth together, then moves
+to the next depth. It is not a score input, so parallelism is visible without
+making duplicated or speculative concurrent work free.
+
 Current entries: `BFS` (map-based reference implementation, always
 optimal), `DFS` (naive baseline, fast but not remotely shortest), `A-Star`
 (Manhattan-heuristic best-first search - fast, but teleporters can make the

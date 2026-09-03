@@ -26,7 +26,11 @@ import (
 // in solver.go. Lets a viewer reveal a whole generation's worth of edges
 // at once for a solver that reports real values, instead of always one
 // edge at a time in array order.
-const exportFormatVersion = 4
+//
+// v5: deterministic score uses total ops rather than Span. Span remains
+// exported for diagnostics and animation, but a theoretical parallel depth
+// does not account for worker startup or synchronization overhead.
+const exportFormatVersion = 5
 
 type jsonCell struct {
 	X int `json:"x"`
@@ -59,15 +63,15 @@ type jsonResult struct {
 	Path          []jsonCell `json:"path"`
 	Visited       []jsonCell `json:"visited"`
 	Edges         []jsonEdge `json:"edges"`
-	OpsCount      int        `json:"opsCount"`    // len(Edges); total work done, informational only - see scoring.go for why span, not this, feeds the score
-	SpanCount     int        `json:"spanCount"`   // critical-path length; deterministic score input
+	OpsCount      int        `json:"opsCount"`    // len(Edges); total work done, deterministic score input
+	SpanCount     int        `json:"spanCount"`   // critical-path length; informational only
 	AllocsCount   int64      `json:"allocsCount"` // heap allocation count; deterministic score input
 	MemBytes      int64      `json:"memBytes"`    // bytes allocated; deterministic score input
 	ElapsedNs     int64      `json:"elapsedNs"`   // informational only - see scoring.go
 	CPUNs         int64      `json:"cpuNs"`       // informational only - see scoring.go
 	Score         float64    `json:"score,omitempty"`
 	StepsRatio    float64    `json:"stepsRatio,omitempty"`
-	SpanRatio     float64    `json:"spanRatio,omitempty"`
+	OpsRatio      float64    `json:"opsRatio,omitempty"`
 	AllocsRatio   float64    `json:"allocsRatio,omitempty"`
 	MemRatio      float64    `json:"memRatio,omitempty"`
 }
@@ -93,8 +97,8 @@ type jsonAggregate struct {
 	Algorithm    string  `json:"algorithm"`
 	AvgScore     float64 `json:"avgScore"`
 	AvgSteps     float64 `json:"avgSteps"`
-	AvgOps       float64 `json:"avgOps"` // total work; informational only - see scoring.go
-	AvgSpan      float64 `json:"avgSpan"`
+	AvgOps       float64 `json:"avgOps"`  // total work; deterministic score input
+	AvgSpan      float64 `json:"avgSpan"` // informational only
 	AvgAllocs    float64 `json:"avgAllocs"`
 	AvgMemBytes  float64 `json:"avgMemBytes"`
 	AvgElapsedNs int64   `json:"avgElapsedNs"` // informational only - see scoring.go
@@ -179,7 +183,7 @@ func buildJSONMaze(seed int64, style string, m *Maze, results []runResult, score
 		if s, ok := scoreByName[r.name]; ok {
 			jr.Score = s.score
 			jr.StepsRatio = s.stepsRatio
-			jr.SpanRatio = s.spanRatio
+			jr.OpsRatio = s.opsRatio
 			jr.AllocsRatio = s.allocsRatio
 			jr.MemRatio = s.memRatio
 		}

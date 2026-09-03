@@ -428,8 +428,8 @@
             status.textContent = filename + ': no mazes found in file.';
             return;
         }
-        if (parsed.formatVersion !== 4) {
-            status.textContent = filename + ': unrecognized formatVersion ' + parsed.formatVersion + ' (viewer expects 4) - reload after rebuilding maze.exe.';
+        if (parsed.formatVersion !== 5) {
+            status.textContent = filename + ': unrecognized formatVersion ' + parsed.formatVersion + ' (viewer expects 5) - reload after rebuilding maze.exe.';
         }
         data = parsed;
         mazes = parsed.mazes;
@@ -478,10 +478,10 @@
                 { key: 'algorithm', label: 'Algo' },
                 { key: 'avgScore', label: 'Score', fmt: function (v) { return v.toFixed(2); } },
                 { key: 'avgSteps', label: 'Steps', fmt: function (v) { return v.toFixed(1); } },
-                { key: 'avgSpan', label: 'Span', fmt: function (v) { return v.toFixed(1); } },
+                { key: 'avgOps', label: 'Ops', fmt: function (v) { return v.toFixed(1); } },
                 { key: 'avgAllocs', label: 'Allocs', fmt: function (v) { return v.toFixed(1); } },
                 { key: 'avgMemBytes', label: 'Mem', fmt: formatBytes },
-                { key: 'avgOps', label: 'Ops¹', fmt: function (v) { return v.toFixed(1); } },
+                { key: 'avgSpan', label: 'Span¹', fmt: function (v) { return v.toFixed(1); } },
                 { key: 'wins', label: 'Wins' }
             ];
             rows = data.leaderboard.slice();
@@ -490,10 +490,10 @@
                 { key: 'algorithm', label: 'Algo' },
                 { key: 'score', label: 'Score', fmt: function (v) { return v ? v.toFixed(2) : '-'; } },
                 { key: 'steps', label: 'Steps' },
-                { key: 'spanCount', label: 'Span' },
+                { key: 'opsCount', label: 'Ops' },
                 { key: 'allocsCount', label: 'Allocs' },
                 { key: 'memBytes', label: 'Mem', fmt: formatBytes },
-                { key: 'opsCount', label: 'Ops¹' }
+                { key: 'spanCount', label: 'Span¹' }
             ];
             rows = mazes[activeMazeIndex].results.slice();
         }
@@ -516,7 +516,7 @@
             html += '</tr>';
         });
         html += '</tbody></table>';
-        html += '<p class="note">Score = geometric mean of Steps/Span/Allocs/Mem, each ratioed against the best algorithm in that dimension on that maze. All four are deterministic - the same maze solved by the same algorithm produces the exact same numbers on any machine, every run - which is why wall-clock time and CPU time aren\'t shown here at all: they depend on how busy the machine running the benchmark happens to be. Span is critical-path length (the longest chain of discoveries that had to happen strictly in sequence) rather than total work, so a solver that genuinely splits work across threads is credited for it instead of penalized for "doing more total operations." ¹Ops (total discoveries made, informational) is shown for context but isn\'t part of Score - Span already covers what a plain discovery count would double-count for a concurrent solver.</p>';
+        html += '<p class="note">Deterministic efficiency score = geometric mean of Steps/Ops/Allocs/Mem, each ratioed against the best algorithm in that dimension on that maze. All four are deterministic - the same maze solved by the same algorithm produces the same numbers on any machine, every run - which is why wall-clock time and CPU time aren\'t scored. Ops is total discovery work, so a multithreaded solver receives neither a theoretical parallelism bonus nor an arbitrary thread penalty. ¹Span remains visible as an animation/diagnostic measure of discovery-tree depth, but is not part of Score.</p>';
         el.innerHTML = html;
         el.querySelectorAll('th').forEach(function (th) {
             th.addEventListener('click', function () {
@@ -627,7 +627,7 @@
 
             var note = document.createElement('div');
             note.className = 'note';
-            note.textContent = 'Score is computed from steps/span/allocs/mem - deterministic, same every run on any machine. Span is critical-path length, not total work, so a solver that genuinely splits work across threads gets credit for it. Wall-clock and CPU time aren\'t shown at all, since they depend on how busy this machine happens to be right now.';
+            note.textContent = 'Score is computed from steps/ops/allocs/mem - deterministic, same every run on any machine. Ops is the total discovery work, so concurrent solvers are charged for every operation they perform. Span is retained only to animate concurrent discovery generations together. Wall-clock and CPU time are context only, because they depend on how busy this machine happens to be.';
             wrap.appendChild(note);
 
             container.appendChild(wrap);
@@ -738,12 +738,10 @@
         var totalEdges = st.edges.length, totalPath = st.pathCells.length;
         var explorationFraction = (totalEdges + totalPath) > 0 ? totalEdges / (totalEdges + totalPath) : 0;
 
-        // waveShown is how far into the generation timeline this frame has
-        // reached, not an edge count - an edge is visible once its own
-        // wave (see waves, above) is at or below this. Several edges can
-        // share a wave, so this is what actually lets a genuinely
-        // concurrent solver's simultaneous discoveries pop in together as
-        // one moment instead of a forced single-file reveal.
+        // waveShown is a position in the generation timeline, not an edge
+        // count. All edges in the active wave grow concurrently. The next
+        // wave cannot begin until every edge in this one has reached its
+        // destination: each span is an animation barrier.
         var waveShown, pathShown;
         if (progress <= explorationFraction && explorationFraction > 0) {
             waveShown = (progress / explorationFraction) * st.maxWave;
@@ -762,6 +760,9 @@
         // same cell) and a jump back to an earlier branch point after a
         // dead end both read as what they are, instead of getting smeared
         // into a single trail.
+        var completedWave = Math.floor(waveShown);
+        var activeWave = completedWave + 1;
+        var activeProgress = Math.max(0, Math.min(1, waveShown - completedWave));
         var edgesShown = 0;
         if (totalEdges > 0) {
             ctx.strokeStyle = getCssVar('--trail');
@@ -770,13 +771,22 @@
             ctx.globalAlpha = 0.75;
             ctx.beginPath();
             for (var i = 0; i < totalEdges; i++) {
-                if (st.waves[i] > waveShown) continue;
-                edgesShown++;
+                var edgeProgress;
+                if (st.waves[i] <= completedWave) {
+                    edgeProgress = 1;
+                    edgesShown++;
+                } else if (st.waves[i] === activeWave && activeProgress > 0) {
+                    // Every operation in the active span progresses at the
+                    // same time. None of the following span is admitted yet.
+                    edgeProgress = activeProgress;
+                } else {
+                    continue;
+                }
                 var e = st.edges[i];
                 var fx = e.from.x * cs + cs / 2, fy = e.from.y * cs + cs / 2;
                 var tx = e.to.x * cs + cs / 2, ty = e.to.y * cs + cs / 2;
                 ctx.moveTo(fx, fy);
-                ctx.lineTo(tx, ty);
+                ctx.lineTo(fx + (tx - fx) * edgeProgress, fy + (ty - fy) * edgeProgress);
             }
             ctx.stroke();
             ctx.globalAlpha = 1;
@@ -786,7 +796,10 @@
             // full-cell red squares were.
             ctx.fillStyle = getCssVar('--visited');
             for (var j = 0; j < totalEdges; j++) {
-                if (st.waves[j] > waveShown) continue;
+                // A branch tip is only complete after its whole span has
+                // completed; partial operations do not leak into the next
+                // animation generation.
+                if (st.waves[j] > completedWave) continue;
                 var to = st.edges[j].to;
                 if (st.pathSet.has(to.x + ',' + to.y)) continue;
                 var dx = to.x * cs + cs / 2, dy = to.y * cs + cs / 2;
@@ -879,14 +892,11 @@
         var durationMs = parseFloat(durationSlider.value) * 1000;
         var mode = modeSelect.value;
 
-        // "Proportional" paces each panel by span (critical-path length) -
-        // deterministic, the same on any machine, and fair to a
-        // concurrent solver (a search split across threads finishes its
-        // animation sooner than one doing the identical total work
-        // single-threaded, matching what its Score already rewards it
-        // for) - rather than wall-clock time, which was measured on
-        // whatever machine ran the benchmark and would make the animation
-        // itself both non-reproducible and unfair to real parallelism.
+        // "Proportional" paces each panel by span (critical-path length)
+        // for visualization only. It makes all work in one concurrent
+        // discovery generation appear together before the next generation;
+        // score is intentionally based on total ops, not span. Wall-clock
+        // time remains unsuitable because it varies by machine and load.
         var maxSpan = 1;
         if (mode === 'proportional') {
             panelState.forEach(function (st) { maxSpan = Math.max(maxSpan, st.result.spanCount || st.edges.length); });

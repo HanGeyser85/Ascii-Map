@@ -15,9 +15,9 @@ type runResult struct {
 	elapsed  time.Duration // informational only - see scoring.go's doc comment for why this no longer feeds the score
 	cpuTime  time.Duration // informational only - see scoring.go's doc comment for why this no longer feeds the score
 	memBytes int64
-	allocs   int64 // heap allocation count (runtime.MemStats.Mallocs delta) - deterministic, feeds the score
-	ops      int   // search effort: len(Solution.Edges) - deterministic, informational (see scoring.go for why this doesn't feed the score - span does)
-	span     int   // critical-path length: Solution.Span, or ops itself for a solver that leaves Span unset - deterministic, feeds the score
+	allocs   int64 // heap allocation count (runtime.MemStats.Mallocs delta) - deterministic score input
+	ops      int   // search effort: len(Solution.Edges) - deterministic score input
+	span     int   // critical-path length: Solution.Span, or ops when unset; informational only
 	steps    int   // moves taken (path cell count - 1)
 
 	valid         bool
@@ -223,12 +223,9 @@ func runAllSolvers(m *Maze) []runResult {
 		cpuElapsed := (processCPUTime() - cpuBefore) / time.Duration(timingRuns)
 
 		ops := len(sol.Edges)
-		// Span defaults to 0 on Solution - the sentinel a single-threaded
-		// solver leaves unset, meaning "every discovery was sequentially
-		// dependent on the last, so span equals total work" (see
-		// Solution.Span's doc comment). Only a genuinely concurrent
-		// solver (BrenThread, BrenThreadOptimized) reports a real,
-		// smaller span.
+		// Span remains useful for visualization and diagnostics, but it is
+		// deliberately not a score input: theoretical dependency depth does
+		// not include a concurrent solver's real worker/synchronization cost.
 		span := sol.Span
 		if span == 0 {
 			span = ops
@@ -300,7 +297,7 @@ func printPanelsOrSummary(results []runResult, summaryOnly bool, consoleWidth in
 func printLeaderboard(title string, results []runResult) {
 	scored := scoreResults(results)
 
-	fmt.Printf("--- %s (score = geometric mean of steps/span/allocs/mem ratios vs. the best on this maze; 1.0 = best in everything, smallest first; ops/time/cpu below are informational only - see scoring.go) ---\n", title)
+	fmt.Printf("--- %s (deterministic efficiency score = geometric mean of steps/ops/allocs/mem ratios vs. the best on this maze; 1.0 = best in everything, smallest first; span/time/cpu are informational only - see scoring.go) ---\n", title)
 
 	if len(scored) > 0 {
 		minSteps := scored[0].steps
@@ -327,8 +324,8 @@ func printLeaderboard(title string, results []runResult) {
 	}
 
 	for i, r := range scored {
-		fmt.Printf("%2d. %-20s score %6.2f   %6d steps   %6d span   %6d allocs   mem %10s   (ops %d, time %s, cpu %s)\n",
-			i+1, r.name, r.score, r.steps, r.span, r.allocs, formatBytes(r.memBytes), r.ops, r.elapsed, r.cpuTime)
+		fmt.Printf("%2d. %-20s score %6.2f   %6d steps   %6d ops   %6d allocs   mem %10s   (span %d, time %s, cpu %s)\n",
+			i+1, r.name, r.score, r.steps, r.ops, r.allocs, formatBytes(r.memBytes), r.span, r.elapsed, r.cpuTime)
 	}
 	disqualified := len(results) - len(scored)
 	if disqualified > 0 {
@@ -348,8 +345,8 @@ type aggregate struct {
 	name      string
 	avgScore  float64
 	avgSteps  float64
-	avgOps    float64 // total work; informational only - see scoring.go
-	avgSpan   float64
+	avgOps    float64 // total work; deterministic score input
+	avgSpan   float64 // informational only
 	avgAllocs float64
 	avgMem    float64
 	avgTime   time.Duration // informational only - see scoring.go
@@ -385,10 +382,10 @@ func runBenchmark(summaryOnly bool, consoleWidthOverride int, consoleRoutes bool
 
 	agg := aggregateScores(runsBySeed)
 
-	fmt.Println("=== All algorithms - average score across all 10 seeds (score = geometric mean of steps/span/allocs/mem ratios vs. the best on each maze; smallest first; ops/time/cpu below are informational only - see scoring.go) ===")
+	fmt.Println("=== All algorithms - deterministic efficiency score across all 10 seeds (geometric mean of steps/ops/allocs/mem ratios vs. the best on each maze; smallest first; span/time/cpu below are informational only - see scoring.go) ===")
 	for i, a := range agg {
-		fmt.Printf("%2d. %-20s avg score %6.2f   avg %6.1f steps   avg %7.1f span   avg %7.1f allocs   avg mem %10s   won %d/%d   (avg ops %.1f, avg time %s, avg cpu %s)\n",
-			i+1, a.name, a.avgScore, a.avgSteps, a.avgSpan, a.avgAllocs, formatBytes(int64(a.avgMem)), a.wins, len(BenchmarkSeeds), a.avgOps, a.avgTime, a.avgCPU)
+		fmt.Printf("%2d. %-20s avg score %6.2f   avg %6.1f steps   avg %7.1f ops   avg %7.1f allocs   avg mem %10s   won %d/%d   (avg span %.1f, avg time %s, avg cpu %s)\n",
+			i+1, a.name, a.avgScore, a.avgSteps, a.avgOps, a.avgAllocs, formatBytes(int64(a.avgMem)), a.wins, len(BenchmarkSeeds), a.avgSpan, a.avgTime, a.avgCPU)
 	}
 	fmt.Println()
 
@@ -444,8 +441,8 @@ func runBenchmark(summaryOnly bool, consoleWidthOverride int, consoleRoutes bool
 }
 
 // aggregateScores scores every seed's results (see scoreResults in
-// scoring.go), averages each algorithm's score/steps/span/allocs/mem (the
-// deterministic quantities scored on) plus ops/time/cpu (informational
+// scoring.go), averages each algorithm's score/steps/ops/allocs/mem (the
+// deterministic quantities scored on) plus span/time/cpu (informational
 // only) across all seeds it was valid in, and returns them sorted
 // best-average-score first. A seed's top scorer counts as a "win" for
 // that seed.
